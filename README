@@ -1,0 +1,6 @@
+pysd - TV show subtitles automatic downloading
+
+This is a small Python script which allows you to automatically download TV
+show subtitles from www.TVsubtitles.net and also can be used as a separate
+Python module.
+
