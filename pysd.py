@@ -31,7 +31,7 @@ import os
 import re
 import signal
 import stat
-import tempfile
+import StringIO
 import time
 import urllib2
 import zipfile
@@ -312,10 +312,7 @@ class Tvsubtitles_net:
             raise Fatal_error("Unable to download the subtitles: {0}.", e)
 
         try:
-            temp_zip = tempfile.TemporaryFile()
-            temp_zip.write(zipfile_data)
-
-            subtitles_zip = zipfile.ZipFile(temp_zip)
+            subtitles_zip = zipfile.ZipFile(StringIO.StringIO(zipfile_data))
             if len(subtitles_zip.namelist()) != 1:
                 raise Error("zip file contains {0} files instead of 1", len(subtitles_zip.namelist()))
 
