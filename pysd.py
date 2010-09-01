@@ -17,6 +17,13 @@
 #  GNU General Public License for more details.
 #
 
+"""
+pysd - a small Python script which allows you to automatically download TV show
+subtitles from www.TVsubtitles.net and www.opensubtitles.org and which also can
+be used as a separate Python module.
+"""
+
+
 import sys
 
 if sys.version_info < (2, 6):
@@ -26,18 +33,23 @@ if sys.version_info < (2, 6):
         raise Exception("pysd needs python >= 2.6")
 
 import getopt
-import glob
+import gzip
+import httplib
 import os
 import re
 import signal
 import stat
 import StringIO
+import struct
 import time
+import urllib
 import urllib2
+import urlparse
+import xmlrpclib
 import zipfile
 
 
-__all__ = [ "Tv_show_tools", "Tvsubtitles_net", "NETWORK_TIMEOUT" ]
+__all__ = [ "Tv_show_tools", "Opensubtitles_org", "Tvsubtitles_net", "NETWORK_TIMEOUT" ]
 
 
 # Network timeout in seconds.
@@ -57,60 +69,69 @@ class Tv_show_tools:
     }
 
 
-    def __init__(self):
-        self.__downloaders = [ Tvsubtitles_net() ]
+    def __init__(self, use_opensubtitles = False):
+        self.__downloaders = []
+
+        if use_opensubtitles:
+            self.__downloaders += [( "www.opensubtitles.org", Opensubtitles_org() )]
+        self.__downloaders += [( "www.tvsubtitles.net", Tvsubtitles_net() )]
 
 
     def get_info_from_filename(self, filename):
         """
-        Returns a TV show possible names, season and episode numbers gotten
-        from vidio or subtitles filename. For subtitles language is also
-        returned.
+        Returns a TV show possible names, season and episode numbers and extra
+        info delimiter gotten from video or subtitles filename. For subtitles
+        language is also returned.
         """
 
         try:
-            filename, extension = os.path.splitext(filename)
+            filename, extension = os.path.splitext(filename.lower())
             is_subtitles = ( extension == ".srt" )
             name = None
 
             if not name:
-                match = re.match(r"""^(.+)\.s(\d+)e(\d+)(\..*){0,1}$""", filename, re.IGNORECASE)
+                match = re.match(r"""^(.+)\.s(\d+)\.{0,1}e(\d+)(\..*){0,1}$""", filename)
                 if match:
-                    name = self.__file_name_exceptions.get(match.group(1).lower(), match.group(1).replace(".", " "))
+                    name = self.__file_name_exceptions.get(match.group(1), match.group(1).replace(".", " "))
                     season = int(match.group(2))
                     episode = int(match.group(3))
-                    extra_info = [
-                        info.strip().lower()
-                            for info in match.group(4)[1:].split(".")
-                    ]
+                    delimiter = "."
+                    extra_info = (match.group(4) or "")
+                    extra_info = [ info.strip() for info in extra_info[1:].split(".") if info.strip() ]
 
             if not name:
-                match = re.match(r"""^(.+)\s+-\s+(\d+)x(\d+)(\s+-.*){0,1}$""", filename, re.IGNORECASE)
+                match = re.match(r"""^(.+)\s+-\s+(\d+)x(\d+)(\..*|\s+-.*){0,1}$""", filename)
                 if match:
-                    name = self.__file_name_exceptions.get(match.group(1).lower(), match.group(1))
+                    name = self.__file_name_exceptions.get(match.group(1), match.group(1))
                     season = int(match.group(2))
                     episode = int(match.group(3))
-                    extra_info = [
-                        info.strip().lower()
-                            for info in match.group(4)[match.group(4).find('-') + 1:].split(".")
-                    ]
+                    delimiter = "."
+                    extra_info = (match.group(4) or "")
+                    if extra_info[0:1] == ".":
+                        extra_info = extra_info[1:]
+                    else:
+                        extra_info = extra_info[extra_info.find('-') + 1:]
+                    extra_info = [ info.strip() for info in extra_info.split(".") if info.strip() ]
 
             if not name:
                 match = re.match(r"""^(.+)_s(\d+)e(\d+)(_.*){0,1}$""", filename, re.IGNORECASE)
                 if match:
-                    name = self.__file_name_exceptions.get(match.group(1).lower(), match.group(1).replace("_", " "))
+                    name = self.__file_name_exceptions.get(match.group(1), match.group(1).replace("_", " "))
                     season = int(match.group(2))
                     episode = int(match.group(3))
-                    extra_info = [
-                        info.strip().lower()
-                            for info in match.group(4)[1:].split("_")
-                    ]
+                    extra_info = (match.group(4) or "")
+                    delimiter = "_"
+                    if extra_info[0:1] == ".":
+                        delimiter = "."
+                    extra_info = [ info.strip() for info in extra_info[1:].split(delimiter) if info.strip() ]
 
             if not name:
                 raise Not_found()
 
+            # Universalizing the TV show name
+            name = re.sub("\s+", " ", name.replace("_", " ")).strip()
+
             # Searching for possible aliases -->
-            name = re.sub("\s+", " ", name).strip().lower()
             names = [ name ]
 
             # "The Mentalist" == "Mentalist"
@@ -120,14 +141,14 @@ class Tv_show_tools:
             # Sometimes releasers include in the show name a year when TV show was
             # started. For example, "V" TV show files was named as
             # V.2009.S01E10.HDTV.XviD-2HD.avi.
-            match = re.match(r"""^(.+) \d{4}$""", name, re.IGNORECASE)
+            match = re.match(r"""^(.+) \d{4}$""", name)
             if match:
                 names.append(match.group(1))
             # Searching for possible aliases <--
 
             # Checking gotten data -->
             for name in names:
-                if not re.search("[a-z0-9]", name, re.IGNORECASE):
+                if not re.search("[a-z0-9]", name):
                     raise Not_found()
 
                 if not season or not episode:
@@ -138,109 +159,145 @@ class Tv_show_tools:
                 "subtitles" if is_subtitles else "video" )
 
         if is_subtitles:
-            if extra_info and len(extra_info[-1]) == 2:
+            if extra_info and (
+                len(extra_info[-1]) == 2 and extra_info[-1] in LANGUAGES or
+                len(extra_info[-1]) == 3 and extra_info[-1] in LANGUAGES.values()
+            ):
                 language = extra_info[-1]
             else:
                 language = "en"
         else:
             language = None
 
-        return ( names, season, episode, language )
+        return ( names, season, episode, delimiter, language )
 
 
-    def get_subtitles(self, tv_show_path, languages):
+    def get_subtitles(self, tv_show_paths, languages):
         """
-        Gets a path to a TV show video file or to a directory with TV show
-        video file(s) and downloads subtitles for this TV shows for the
-        specified languages, that is not downloaded yet.
+        Gets a list of paths to a TV show video file or to a directories with
+        TV show video file(s) and downloads subtitles for this TV shows for the
+        specified languages, if they are not downloaded yet.
 
-        Returns the number of subtitles that had not been found.
+        Returns the number of errors happened.
         """
 
-        try:
-            is_directory = stat.S_ISDIR(os.stat(tv_show_path)[stat.ST_MODE])
-        except Exception, e:
-            raise Error("Unable to find '{0}': {1}.", tv_show_path, e)
+        errors = 0
+        tasks = []
+        files_to_process = []
+        media_extensions = ("*.avi", "*.mkv", "*.mp4", "*.wmv")
 
-        tv_show_path = os.path.abspath(tv_show_path)
-        media_dir = ( tv_show_path if is_directory else os.path.dirname(tv_show_path) )
+        # Gathering file list that we are going to process -->
+        for tv_show_path in tv_show_paths:
+            try:
+                try:
+                    is_directory = stat.S_ISDIR(os.stat(tv_show_path)[stat.ST_MODE])
+                except Exception, e:
+                    raise Error("Unable to find '{0}': {1}.", tv_show_path, e)
 
-        try:
-            media_files = []
-            available_subtitles = [
-                os.path.basename(path)
-                    for path in glob.glob(os.path.join(media_dir, "*.srt"))
-            ]
+                tv_show_path = os.path.abspath(tv_show_path)
+                media_dir = ( tv_show_path if is_directory else os.path.dirname(tv_show_path) )
 
-            if is_directory:
-                media_extensions = ("*.avi", "*.mkv", "*.mp4", "*.wmv")
+                if (not is_directory and
+                    os.path.splitext(tv_show_path)[1].lower() not in (ext[1:] for ext in media_extensions)
+                ):
+                    raise Error("'{0}' is not a media {1} file.", tv_show_path, media_extensions)
 
-                for extension in media_extensions:
-                    media_files += glob.glob(os.path.join(media_dir, extension))
+                try:
+                    media_files = []
 
-                if not media_files:
-                    raise Error("There are no media {0} files in the directory '{1}'.", media_extensions, media_dir)
-            else:
-                media_files.append(tv_show_path)
+                    available_subtitles = [
+                        file_name
+                            for file_name in os.listdir(media_dir)
+                                if os.path.splitext(file_name)[1].lower() == ".srt"
+                    ]
 
-            media_files = [
-                os.path.basename(path)
-                    for path in media_files
-            ]
-            media_files.sort(cmp = lambda a, b: cmp(a.lower(), b.lower()))
-        except Error:
-            raise
-        except Exception, e:
-            raise Error("Error while reading the directory '{0}': {1}.", media_dir, e)
+                    if is_directory:
+                        media_files += [
+                            file_name
+                                for file_name in os.listdir(media_dir)
+                                    if os.path.splitext(file_name)[1].lower() in (ext[1:] for ext in media_extensions)
+                        ]
 
-        return self.__get_subtitles(media_dir, media_files, available_subtitles, languages)
+                        if not media_files:
+                            raise Error("There are no media {0} files in the directory '{1}'.", media_extensions, media_dir)
+                    else:
+                        media_files.append(os.path.basename(tv_show_path))
+                except Error:
+                    raise
+                except Exception, e:
+                    raise Error("Error while reading directory '{0}': {1}.", media_dir, e)
+
+                media_files.sort(cmp = lambda a, b: cmp(a.lower(), b.lower()))
+                files_to_process += [ os.path.join(media_dir, file_name) for file_name in media_files ]
+
+                tasks.append( (media_dir, media_files, available_subtitles, languages) )
+            except Exception, e:
+                self.__log_error(e)
+                errors += 1
+        # Gathering file list that we are going to process <--
+
+        # Caching subtitles info if it possible
+        if files_to_process:
+            for downloader_name, downloader in self.__downloaders:
+                if hasattr(downloader, "will_be_requested"):
+                    self.__log_info("Getting subtitles info for all requested files from {0} for further processing...", downloader_name)
+                    for e in downloader.will_be_requested(files_to_process, languages):
+                        self.__log_error(e)
+
+        # Getting the subtitles
+        for task in tasks:
+            errors += self.__get_subtitles(*task)
+
+        return errors
 
 
     def __get_subtitles(self, media_dir, media_files, available_subtitles, languages):
         """Downloads subtitles that we have not yet.
-        Returns the number of subtitles that had not been found.
+        Returns the number of errors happened.
         """
 
-        not_found = 0
+        errors = 0
 
         # Getting available subtitles info -->
         subtitles = set()
 
-        for filename in available_subtitles:
+        for file_name in available_subtitles:
             try:
-                names, season, episode, language = self.get_info_from_filename(filename)
+                names, season, episode, delimiter, language = self.get_info_from_filename(file_name)
             except Not_found, e:
-                self.__log_error("{0}: {1}", os.path.join(media_dir, filename), e)
+                self.__log_error("{0}: {1}", os.path.join(media_dir, file_name), e)
             else:
                 for name in names:
                     subtitles.add( (name, season, episode, language) )
         # Getting available subtitles info <--
 
         # Downloading the subtitles that is not downloaded yet -->
-        for filename in media_files:
+        for file_name in media_files:
+            file_path = os.path.join(media_dir, file_name)
+
             try:
-                names, season, episode, language = self.get_info_from_filename(filename)
+                names, season, episode, delimiter, language = self.get_info_from_filename(file_name)
             except Not_found, e:
-                self.__log_error("{0}: {1}", os.path.join(media_dir, filename), e)
+                self.__log_error("{0}: {1}", file_path, e)
                 continue
 
-            self.__log_info("Processing {0}...", os.path.join(media_dir, filename))
+            self.__log_info("Processing {0}...", file_path)
 
             for language in languages:
                 for name in names:
                     if (name, season, episode, language) in subtitles:
                         break
                 else:
-                    for name, downloader in ( (n, d) for n in names for d in self.__downloaders ):
+                    for name, (downloader_name, downloader) in ( (n, d) for d in self.__downloaders for n in names ):
                         try:
-                            subtitles_data = downloader.get(name, season, episode, language)
+                            subtitles_data = downloader.get(file_path, name, season, episode, language)
                         except Not_found:
                             pass
                         else:
                             subtitles.add( (name, season, episode, language) )
 
-                            subtitles_file_path = os.path.join(media_dir, "{0}.{1}.srt".format(
-                                os.path.splitext(filename)[0], language ))
+                            subtitles_file_path = os.path.join(media_dir, "{0}{1}{2}.srt".format(
+                                os.path.splitext(file_name)[0], delimiter, language ))
 
                             try:
                                 subtitles_file = open(subtitles_file_path, "w")
@@ -251,16 +308,16 @@ class Tv_show_tools:
                                     os.unlink(subtitles_file_path)
                                     raise
                             except Exception, e:
-                                E("Error while writting subtitles file '{0}': {1}.", subtitles_file_path, e)
-                                not_found += 1
+                                self.__log_error("Error while writting subtitles file '{0}': {1}.", subtitles_file_path, e)
+                                errors += 1
 
                             break
                     else:
-                        self.__log_error("Subtitles for '{0}' TV show for '{1}' language is not found.", os.path.join(media_dir, filename), language)
-                        not_found += 1
+                        self.__log_error("Subtitles for '{0}' TV show for '{1}' language is not found.", file_path, language)
+                        errors += 1
         # Downloading the subtitles that is not downloaded yet <--
 
-        return not_found
+        return errors
 
 
     def __log_error(self, message, *args):
@@ -273,6 +330,220 @@ class Tv_show_tools:
         """Logs an info message (may be overriden in the derived classes)."""
 
         I(message, *args)
+
+
+
+class Opensubtitles_org:
+    """
+    Gives a facility to download subtitles from www.opensubtitles.org.
+    """
+
+    # www.opensubtitles.org domain name.
+    __domain_name = "www.opensubtitles.org"
+
+    # www.opensubtitles.org XML-RPC server has limits for maximum number of
+    # items retuned per query.
+    __max_reply_items = 500
+
+    # Connection with the www.opensubtitles.org XML-RPC server
+    __connection = None
+
+    # The www.opensubtitles.org XML-RPC server token.
+    __token = None
+
+    # Request cache.
+    __cache = None
+
+
+    def __init__(self):
+        self.__cache = {}
+
+
+    def __del__(self):
+        try:
+            if self.__token:
+                self.__call("LogOut", self.__token)
+        except:
+            pass
+
+
+    def get(self, file_path, show_name, season, episode, language):
+        """Gets a TV show subtitles and returns the subtitles file contents."""
+
+        if file_path not in self.__cache or language not in self.__cache[file_path]:
+            self.will_be_requested([file_path], [language])
+
+        url = self.__cache[file_path][language]
+        if url:
+            try:
+                url_file = StringIO.StringIO(get_url_contents(url))
+            except Exception, e:
+                raise Fatal_error("Unable to download the subtitles: {0}.", e)
+
+            try:
+                return gzip.GzipFile(fileobj = url_file).read()
+            except Exception, e:
+                raise Error("Unable to gunzip the subtitles file: {0}.", e)
+        else:
+            raise Not_found()
+
+
+    def will_be_requested(self, requested_paths, languages):
+        """
+        Gets a list of files that will likely requested in the nearest time, so
+        we can send one request for all of them and cache gotten data to save the
+        time in the future.
+
+        Returns a list with errors per file if happened.
+        """
+
+        # Checking the gotten data
+        for language in languages:
+            if language not in LANGUAGES:
+                raise Error("invalid language ({0})", language)
+
+        errors = []
+        requested_paths = requested_paths[:]
+        movies_per_request = self.__max_reply_items // (len(languages) * 5) or 1
+
+        while requested_paths:
+            movies = []
+            hashes = {}
+
+            # Hashing the files -->
+            for movie_path in requested_paths[0 : movies_per_request]:
+                try:
+                    movie_size, movie_hash = self.__get_file_hash(movie_path)
+                    movies.append({
+                        "moviebytesize": movie_size,
+                        "moviehash": movie_hash,
+                        "sublanguageid": ",".join([ LANGUAGES[language] for language in languages ])
+                    })
+
+                    if movie_hash not in hashes:
+                        hashes[movie_hash] = []
+                    hashes[movie_hash].append(movie_path)
+                except Exception, e:
+                    if movie_path not in self.__cache:
+                        self.__cache[movie_path] = {}
+
+                    for language in languages:
+                        self.__cache[movie_path][language] = None
+
+                    errors.append(str(e))
+            # Hashing the files <--
+
+            # Getting available subtitles -->
+            if movies:
+                self.__connect()
+
+                try:
+                    subtitles_list = self.__call("SearchSubtitles", self.__token, movies)["data"]
+                except Exception, e:
+                    raise Fatal_error("Unable to get a list of subtitles from {0}: {1}.", self.__domain_name, e)
+
+                subtitles_dict = {}
+
+                # Filtering the subtitles with the most downloads count -->
+                if subtitles_list:
+                    subtitles_list.sort(cmp = lambda a, b: (
+                        cmp(a["MovieHash"],       b["MovieHash"]) or
+                        cmp(a["ISO639"],          b["ISO639"]) or
+                        cmp(a["SubDownloadsCnt"], b["SubDownloadsCnt"])
+                    ), reverse = True)
+
+                    for subtitles in subtitles_list:
+                        movie_hash = subtitles["MovieHash"]
+                        language = subtitles["ISO639"]
+
+                        if movie_hash not in subtitles_dict:
+                            subtitles_dict[movie_hash] = {}
+                        movie_subtitles = subtitles_dict[movie_hash]
+
+                        if language not in movie_subtitles:
+                            movie_subtitles[language] = subtitles["SubDownloadLink"]
+                # Filtering the subtitles with the most downloads count <--
+            # Getting available subtitles <--
+
+            # Mapping movie names to subtitles -->
+            for movie_hash, movie_paths in hashes.iteritems():
+                for movie_path in movie_paths:
+                    if movie_path not in self.__cache:
+                        self.__cache[movie_path] = {}
+
+                    for language in languages:
+                        self.__cache[movie_path][language] = subtitles_dict.get(movie_hash, {}).get(language, self.__cache[movie_path].get(language))
+            # Mapping movie names to subtitles <--
+
+            requested_paths = requested_paths[movies_per_request:]
+
+        return errors
+
+
+    def __call(self, method, *args):
+        """Calls XML-RPC method and checks its return code."""
+
+        reply = getattr(self.__connection, method)(*args)
+
+        if "status" not in reply:
+            raise Error("server returned an invalid response")
+
+        if reply["status"].split(" ")[0] != "200":
+            raise Error("server returned error '{0}'", reply["status"])
+
+        return reply
+
+
+    def __connect(self):
+        """Ensures that we are connected to the XML-RPC server."""
+
+        try:
+            if self.__connection == None or not self.__token:
+                self.__connection = xmlrpclib.ServerProxy(
+                    "http://api.opensubtitles.org/xml-rpc", transport = Xml_rpc_proxy(), allow_none = True )
+                self.__token = self.__call("LogIn", "", "", "en", "pysd 0.1")["token"]
+        except Exception, e:
+            raise Fatal_error("Unable to connect to {0} XML-RPC server: {1}.", self.__domain_name, e)
+
+
+    def __get_file_hash(self, path):
+        """
+        Calculates file hash sutable for www.opensubtitles.org XML-RPC query
+        calls. Returns file size and hash.
+        """
+
+        try:
+            hashing_file = open(path, "rb")
+            buf_size = struct.calcsize("=q")
+
+            file_size = os.path.getsize(path)
+            file_hash = file_size
+
+            if file_size < 65536 * 2:
+                raise Error("file too small")
+
+            for pos in (0, file_size - 65536):
+                hashing_file.seek(pos)
+
+                for i in xrange(65536 / buf_size):
+                    buf = ""
+                    data = " "
+
+                    while len(buf) != buf_size:
+                        data = hashing_file.read(buf_size - len(buf))
+                        if data:
+                            buf += data
+                        else:
+                            raise Error("end of file error")
+
+                    file_hash += struct.unpack("=q", buf)[0]
+                    file_hash &= 0xFFFFFFFFFFFFFFFF
+
+            return (file_size, "{0:016x}".format(file_hash))
+        except IOError, e:
+            raise Error("Unable to hash file '{0}': {1}.", path, e)
+        except Exception, e:
+            raise Fatal_error("Error while hashing file '{0}': {1}.", path, e)
 
 
 
@@ -298,7 +569,7 @@ class Tvsubtitles_net:
         self.__cache = {}
 
 
-    def get(self, show_name, season, episode, language):
+    def get(self, file_path, show_name, season, episode, language):
         """Gets a TV show subtitles and returns the subtitles file contents."""
 
         subtitles = self.__get_episode_subtitles(show_name, season, episode)
@@ -319,12 +590,6 @@ class Tvsubtitles_net:
             return subtitles_zip.open(subtitles_zip.namelist()[0]).read()
         except Exception, e:
             raise Error("Unable to unzip the subtitles file: {0}.", e)
-
-
-    def __compare_subtitles(self, a, b):
-        """Subtitle compare function (for the sorting)."""
-
-        return cmp(a["language"], b["language"]) or cmp(a["downloads"], b["downloads"])
 
 
     def __get_episodes(self, show_name, season):
@@ -452,7 +717,10 @@ class Tvsubtitles_net:
                 # Getting only one subtitle with the most downloads per
                 # language.
                 # -->
-                subtitles_list.sort(self.__compare_subtitles, reverse = True)
+                subtitles_list.sort(lambda a, b: (
+                    cmp(a["language"], b["language"]) or cmp(a["downloads"], b["downloads"])
+                ), reverse = True)
+
                 for subtitles in subtitles_list:
                     if subtitles["language"] not in subtitles_dict:
                         subtitles_dict[subtitles["language"]] = subtitles["id"]
@@ -499,6 +767,45 @@ class Tvsubtitles_net:
 
 
 
+class Xml_rpc_proxy(xmlrpclib.Transport):
+    """HTTP proxy for xmlrpclib."""
+
+    # Proxy host (if exists).
+    proxy = None
+
+
+    def __init__(self, use_datetime = 0):
+        xmlrpclib.Transport.__init__(self, use_datetime)
+
+        proxy = urllib.getproxies().get("http", "").strip()
+
+        if proxy:
+            if proxy.startswith("http://") and urlparse.urlparse(proxy).netloc:
+                self.proxy = urlparse.urlparse(proxy).netloc
+            else:
+                raise Fatal_error("invalid HTTP proxy specified ({0})", proxy)
+
+
+    def make_connection(self, host):
+        connection = httplib.HTTP(self.proxy if self.proxy else host)
+
+        if hasattr(connection, "real_host"):
+            raise Fatal_error("logical error")
+
+        connection.real_host = host
+
+        return connection
+
+
+    def send_request(self, connection, handler, request_body):
+        connection.putrequest("POST", "http://{0}{1}".format(connection.real_host, handler))
+
+
+    def send_host(self, connection, host):
+        connection.putheader("Host", connection.real_host)
+
+
+
 class Pysd:
     """The pysd script worker."""
 
@@ -517,61 +824,59 @@ class Pysd:
             signal.siginterrupt(signal.SIGPIPE, False)
 
 
-            paths, languages = self.__get_cmd_options()
-            tools = Tv_show_tools()
+            paths, languages, use_opensubtitles = self.__get_cmd_options()
+            tools = Tv_show_tools(use_opensubtitles)
 
-            not_found = 0
-            for path in paths:
-                try:
-                    not_found += tools.get_subtitles(path, languages)
-                except Fatal_error:
-                    raise
-                except Error, e:
-                    not_found += 1
-                    E(e)
-        except Fatal_error, e:
-            E(e)
-        except End_work_exception, e:
+            errors = tools.get_subtitles(paths, languages)
+        except (End_work_exception, Fatal_error), e:
             E(e)
         except BaseException, e:
-            E("pysd crashed: {0}.", e)
+            if e.__class__ != SystemExit:
+                E("pysd crashed: {0}.", e)
         else:
-            sys.exit(1 if not_found else 0)
+            sys.exit(1 if errors else 0)
 
         sys.exit(1)
 
 
     def __get_cmd_options(self):
         """
-        Parses the command line options and returns a tuple that contains a list of
-        video files and directories with video files and a list of subtitles
-        languages to download.
+        Parses the command line options and returns a tuple that contains a
+        list of video files and directories with video files, a list of
+        subtitles languages to download and a flag - whether we should download
+        subtitles from www.opensubtitles.org.
         """
 
         try:
             cmd_options, cmd_args = getopt.gnu_getopt(
-                sys.argv[1:], "hl:", [ "lang=" ] )
+                sys.argv[1:], "hl:o", [ "lang=", "opensubtitles" ] )
 
             languages = set()
+            use_opensubtitles = False
 
             for option, value in cmd_options:
                 if option in ("-h", "--help"):
                     print (
                         """{0} [OPTIONS] -l LANGUAGE (DIRECTORY|FILE)...\n\n"""
                         """Options:\n"""
-                        """ -l, --lang  a comma separated list of subtitles languages to download ("en,ru")\n"""
-                        """ -h, --help  show this help"""
-                        .format(sys.argv[0])
+                        """ -l, --lang          a comma separated list of subtitles languages to download ("en,ru")\n"""
+                        """ -o, --opensubtitles download subtitles also from www.opensubtitles.org (enhances the result,\n"""
+                        """                     but significantly increases the script work time + www.opensubtitles.org\n"""
+                        """                     servers are often down)\n"""
+                        """ -h, --help          show this help"""
+                                                .format(sys.argv[0])
                     )
                     sys.exit(0)
                 elif option in ("-l", "--lang"):
                     for lang in value.split(","):
                         lang = lang.strip()
 
-                        if len(lang) != 2:
+                        if lang not in LANGUAGES:
                             raise Error("invalid language '{0}'", lang)
 
                         languages.add(lang)
+                elif option in ("-o", "--opensubtitles"):
+                    use_opensubtitles = True
                 else:
                     raise Error("invalid option '{0}'", option)
 
@@ -581,7 +886,7 @@ class Pysd:
             if not languages:
                 raise Error("there is no subtitles languages specified")
 
-            return (cmd_args, languages)
+            return (cmd_args, languages, use_opensubtitles)
         except Exception, e:
             raise Fatal_error("Command line options parsing error: {0}. See `{1} -h` for more information.", e, sys.argv[0])
 
@@ -604,7 +909,7 @@ class Error(Exception):
     """The base class for all pysd exceptions."""
 
     def __init__(self, error, *args):
-        Exception.__init__(self, error.format(*args) if len(args) else error)
+        Exception.__init__(self, error.format(*args) if len(args) else str(error))
 
 
 class Fatal_error(Error):
@@ -641,7 +946,6 @@ def get_url_contents(url):
                 contents += data
         except Exception, e:
             if tries_available:
-                E("Error while downloading '{0}': {1}. Trying again...", url, e)
                 time.sleep(3)
             else:
                 raise
@@ -664,6 +968,196 @@ def I(message, *args):
     """Prints an info message."""
 
     print message.format(*args) if len(args) else message
+
+
+
+# ISO 639-1 -> 639-2/B language codes.
+LANGUAGES = {
+    "ab": "abk",
+    "aa": "aar",
+    "af": "afr",
+    "ak": "aka",
+    "sq": "alb",
+    "am": "amh",
+    "ar": "ara",
+    "an": "arg",
+    "hy": "arm",
+    "as": "asm",
+    "av": "ava",
+    "ae": "ave",
+    "ay": "aym",
+    "az": "aze",
+    "bm": "bam",
+    "ba": "bak",
+    "eu": "baq",
+    "be": "bel",
+    "bn": "ben",
+    "bh": "bih",
+    "bi": "bis",
+    "bs": "bos",
+    "br": "bre",
+    "bg": "bul",
+    "my": "bur",
+    "ca": "cat",
+    "ch": "cha",
+    "ce": "che",
+    "ny": "nya",
+    "zh": "chi",
+    "cv": "chv",
+    "kw": "cor",
+    "co": "cos",
+    "cr": "cre",
+    "hr": "hrv",
+    "cs": "cze",
+    "da": "dan",
+    "dv": "div",
+    "nl": "dut",
+    "dz": "dzo",
+    "en": "eng",
+    "eo": "epo",
+    "et": "est",
+    "ee": "ewe",
+    "fo": "fao",
+    "fj": "fij",
+    "fi": "fin",
+    "fr": "fre",
+    "ff": "ful",
+    "gl": "glg",
+    "ka": "geo",
+    "de": "ger",
+    "el": "gre",
+    "gn": "grn",
+    "gu": "guj",
+    "ht": "hat",
+    "ha": "hau",
+    "he": "heb",
+    "hz": "her",
+    "hi": "hin",
+    "ho": "hmo",
+    "hu": "hun",
+    "ia": "ina",
+    "id": "ind",
+    "ie": "ile",
+    "ga": "gle",
+    "ig": "ibo",
+    "ik": "ipk",
+    "io": "ido",
+    "is": "ice",
+    "it": "ita",
+    "iu": "iku",
+    "ja": "jpn",
+    "jv": "jav",
+    "kl": "kal",
+    "kn": "kan",
+    "kr": "kau",
+    "ks": "kas",
+    "kk": "kaz",
+    "km": "khm",
+    "ki": "kik",
+    "rw": "kin",
+    "ky": "kir",
+    "kv": "kom",
+    "kg": "kon",
+    "ko": "kor",
+    "ku": "kur",
+    "kj": "kua",
+    "la": "lat",
+    "lb": "ltz",
+    "lg": "lug",
+    "li": "lim",
+    "ln": "lin",
+    "lo": "lao",
+    "lt": "lit",
+    "lu": "lub",
+    "lv": "lav",
+    "gv": "glv",
+    "mk": "mac",
+    "mg": "mlg",
+    "ms": "may",
+    "ml": "mal",
+    "mt": "mlt",
+    "mi": "mao",
+    "mr": "mar",
+    "mh": "mah",
+    "mn": "mon",
+    "na": "nau",
+    "nv": "nav",
+    "nb": "nob",
+    "nd": "nde",
+    "ne": "nep",
+    "ng": "ndo",
+    "nn": "nno",
+    "no": "nor",
+    "ii": "iii",
+    "nr": "nbl",
+    "oc": "oci",
+    "oj": "oji",
+    "cu": "chu",
+    "om": "orm",
+    "or": "ori",
+    "os": "oss",
+    "pa": "pan",
+    "pi": "pli",
+    "fa": "per",
+    "pl": "pol",
+    "ps": "pus",
+    "pt": "por",
+    "qu": "que",
+    "rm": "roh",
+    "rn": "run",
+    "ro": "rum",
+    "ru": "rus",
+    "sa": "san",
+    "sc": "srd",
+    "sd": "snd",
+    "se": "sme",
+    "sm": "smo",
+    "sg": "sag",
+    "sr": "srp",
+    "gd": "gla",
+    "sn": "sna",
+    "si": "sin",
+    "sk": "slo",
+    "sl": "slv",
+    "so": "som",
+    "st": "sot",
+    "es": "spa",
+    "su": "sun",
+    "sw": "swa",
+    "ss": "ssw",
+    "sv": "swe",
+    "ta": "tam",
+    "te": "tel",
+    "tg": "tgk",
+    "th": "tha",
+    "ti": "tir",
+    "bo": "tib",
+    "tk": "tuk",
+    "tl": "tgl",
+    "tn": "tsn",
+    "to": "ton",
+    "tr": "tur",
+    "ts": "tso",
+    "tt": "tat",
+    "tw": "twi",
+    "ty": "tah",
+    "ug": "uig",
+    "uk": "ukr",
+    "ur": "urd",
+    "uz": "uzb",
+    "ve": "ven",
+    "vi": "vie",
+    "vo": "vol",
+    "wa": "wln",
+    "cy": "wel",
+    "wo": "wol",
+    "fy": "fry",
+    "xh": "xho",
+    "yi": "yid",
+    "yo": "yor",
+    "za": "zha",
+    "zu": "zul"
+}
 
 
 
