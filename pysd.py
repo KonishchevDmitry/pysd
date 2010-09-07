@@ -403,7 +403,6 @@ class Opensubtitles_org:
                 raise Error("invalid language ({0})", language)
 
         errors = []
-        requested_paths = requested_paths[:]
         movies_per_request = self.__max_reply_items // (len(languages) * 5) or 1
 
         while requested_paths:
@@ -944,7 +943,7 @@ def get_url_contents(url):
             while data and len(contents) < max_data_size + 1:
                 data = url_file.read(max_data_size + 1 - len(contents))
                 contents += data
-        except Exception, e:
+        except Exception:
             if tries_available:
                 time.sleep(3)
             else:
