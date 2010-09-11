@@ -68,6 +68,10 @@ class Tv_show_tools:
         "house.m.d": "house m.d."
     }
 
+    # Known TV show translation releasers.
+    __translation_releasers = frozenset((
+        "lostfilm.tv", "novafilm.tv" ))
+
 
     def __init__(self, use_opensubtitles = False):
         self.__downloaders = []
@@ -79,9 +83,9 @@ class Tv_show_tools:
 
     def get_info_from_filename(self, filename):
         """
-        Returns a TV show possible names, season and episode numbers and extra
-        info delimiter gotten from video or subtitles filename. For subtitles
-        language is also returned.
+        Returns a TV show possible names, season and episode numbers, extra
+        info delimiter and extra info gotten from video or subtitles filename.
+        For subtitles language returned instead of extra info.
         """
 
         try:
@@ -166,10 +170,10 @@ class Tv_show_tools:
                 language = extra_info[-1]
             else:
                 language = "en"
-        else:
-            language = None
 
-        return ( names, season, episode, delimiter, language )
+            return ( names, season, episode, delimiter, language )
+        else:
+            return ( names, season, episode, delimiter, extra_info )
 
 
     def get_subtitles(self, tv_show_paths, languages):
@@ -227,7 +231,7 @@ class Tv_show_tools:
                 except Exception, e:
                     raise Error("Error while reading directory '{0}': {1}.", media_dir, e)
 
-                media_files.sort(cmp = lambda a, b: cmp(a.lower(), b.lower()))
+                media_files.sort(cmp = self.__cmp_media_files)
                 files_to_process += [ os.path.join(media_dir, file_name) for file_name in media_files ]
 
                 tasks.append( (media_dir, media_files, available_subtitles, languages) )
@@ -249,6 +253,44 @@ class Tv_show_tools:
             errors += self.__get_subtitles(*task)
 
         return errors
+
+
+    def __cmp_media_files(self, a, b):
+        """
+        When we process media files, we have to process original media files
+        before any translated media files (if exists). This is needed because
+        we don't download more than one subtitles file per language for a
+        particular episode, but www.opensubtitles.org search engine uses a file
+        hash which is unlikely can be found for translated media files. So if
+        we don't sort media files so, subtitles will be downloaded for
+        translation version only from www.TVsubtitles.net and
+        www.opensubtitles.org will be ignored.
+        """
+
+        try:
+            cmp_info = []
+
+            for file_name in (a, b):
+                name, season, episode, delimiter, extra_info = self.get_info_from_filename(file_name)
+
+                if extra_info and (
+                    extra_info[-1] in self.__translation_releasers or
+                    delimiter.join(extra_info[-2:]) in self.__translation_releasers
+                ):
+                    translated = True
+                else:
+                    translated = False
+
+                cmp_info.append(( name, season, episode, translated ))
+
+            return (0
+                or cmp(cmp_info[0][0], cmp_info[1][0])
+                or cmp(cmp_info[0][1], cmp_info[1][1])
+                or cmp(cmp_info[0][2], cmp_info[1][2])
+                or cmp(cmp_info[0][3], cmp_info[1][3])
+            )
+        except Not_found:
+            return cmp(a.lower(), b.lower())
 
 
     def __get_subtitles(self, media_dir, media_files, available_subtitles, languages):
