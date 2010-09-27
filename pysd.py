@@ -242,7 +242,7 @@ class Tv_show_tools:
 
                 tasks.append( (media_dir, media_files, available_subtitles, languages) )
             except Exception, e:
-                self.__log_error(e)
+                self.log_error(e)
                 errors += 1
         # Gathering file list that we are going to process <--
 
@@ -250,15 +250,27 @@ class Tv_show_tools:
         if files_to_process:
             for downloader_name, downloader in self.__downloaders:
                 if hasattr(downloader, "will_be_requested"):
-                    self.__log_info("Getting subtitles info for all requested files from {0} for further processing...", downloader_name)
+                    self.log_info("Getting subtitles info for all requested files from {0} for further processing...", downloader_name)
                     for e in downloader.will_be_requested(files_to_process, languages):
-                        self.__log_error(e)
+                        self.log_error(e)
 
         # Getting the subtitles
         for task in tasks:
             errors += self.__get_subtitles(*task)
 
         return errors
+
+
+    def log_error(self, message, *args):
+        """Logs an error message (may be overriden in the derived classes)."""
+
+        E(message, *args)
+
+
+    def log_info(self, message, *args):
+        """Logs an info message (may be overriden in the derived classes)."""
+
+        I(message, *args)
 
 
     def __cmp_media_files(self, a, b):
@@ -313,7 +325,7 @@ class Tv_show_tools:
             try:
                 names, season, episode, delimiter, language = self.get_info_from_filename(file_name)
             except Not_found, e:
-                self.__log_error("{0}: {1}", os.path.join(media_dir, file_name), e)
+                self.log_error("{0}: {1}", os.path.join(media_dir, file_name), e)
             else:
                 for name in names:
                     subtitles.add( (name, season, episode, language) )
@@ -326,10 +338,10 @@ class Tv_show_tools:
             try:
                 names, season, episode, delimiter, language = self.get_info_from_filename(file_name)
             except Not_found, e:
-                self.__log_error("{0}: {1}", file_path, e)
+                self.log_error("{0}: {1}", file_path, e)
                 continue
 
-            self.__log_info("Processing {0}...", file_path)
+            self.log_info("Processing {0}...", file_path)
 
             for language in languages:
                 for name in names:
@@ -356,28 +368,16 @@ class Tv_show_tools:
                                     os.unlink(subtitles_file_path)
                                     raise
                             except Exception, e:
-                                self.__log_error("Error while writting subtitles file '{0}': {1}.", subtitles_file_path, e)
+                                self.log_error("Error while writting subtitles file '{0}': {1}.", subtitles_file_path, e)
                                 errors += 1
 
                             break
                     else:
-                        self.__log_error("Subtitles for '{0}' TV show for '{1}' language is not found.", file_path, language)
+                        self.log_error("Subtitles for '{0}' TV show for '{1}' language is not found.", file_path, language)
                         errors += 1
         # Downloading the subtitles that is not downloaded yet <--
 
         return errors
-
-
-    def __log_error(self, message, *args):
-        """Logs an error message (may be overriden in the derived classes)."""
-
-        E(message, *args)
-
-
-    def __log_info(self, message, *args):
-        """Logs an info message (may be overriden in the derived classes)."""
-
-        I(message, *args)
 
 
 
