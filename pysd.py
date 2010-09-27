@@ -212,14 +212,20 @@ class Tv_show_tools:
                     available_subtitles = [
                         file_name
                             for file_name in os.listdir(media_dir)
-                                if os.path.splitext(file_name)[1].lower() == ".srt"
+                                if (
+                                    os.path.splitext(file_name)[1].lower() == ".srt" and
+                                    os.path.isfile(os.path.join(media_dir, file_name))
+                                )
                     ]
 
                     if is_directory:
                         media_files += [
                             file_name
                                 for file_name in os.listdir(media_dir)
-                                    if os.path.splitext(file_name)[1].lower() in (ext[1:] for ext in media_extensions)
+                                    if (
+                                        os.path.splitext(file_name)[1].lower() in (ext[1:] for ext in media_extensions) and
+                                        os.path.isfile(os.path.join(media_dir, file_name))
+                                    )
                         ]
 
                         if not media_files:
