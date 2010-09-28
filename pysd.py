@@ -176,7 +176,7 @@ class Tv_show_tools:
             return ( names, season, episode, delimiter, extra_info )
 
 
-    def get_subtitles(self, tv_show_paths, languages):
+    def get_subtitles(self, tv_show_paths, languages, recursive = False):
         """
         Gets a list of paths to a TV show video file or to a directories with
         TV show video file(s) and downloads subtitles for this TV shows for the
@@ -187,6 +187,7 @@ class Tv_show_tools:
 
         errors = 0
         tasks = []
+        subdirectories = []
         files_to_process = []
         media_extensions = ("*.avi", "*.mkv", "*.mp4", "*.wmv")
 
@@ -207,8 +208,6 @@ class Tv_show_tools:
                     raise Error("'{0}' is not a media {1} file.", tv_show_path, media_extensions)
 
                 try:
-                    media_files = []
-
                     available_subtitles = [
                         file_name
                             for file_name in os.listdir(media_dir)
@@ -219,7 +218,7 @@ class Tv_show_tools:
                     ]
 
                     if is_directory:
-                        media_files += [
+                        media_files = [
                             file_name
                                 for file_name in os.listdir(media_dir)
                                     if (
@@ -228,10 +227,17 @@ class Tv_show_tools:
                                     )
                         ]
 
-                        if not media_files:
-                            raise Error("There are no media {0} files in the directory '{1}'.", media_extensions, media_dir)
+                        if recursive:
+                            subdirectories = [
+                                file_path
+                                    for file_path in ( os.path.join(media_dir, file_name) for file_name in os.listdir(media_dir) )
+                                        if os.path.isdir(file_path)
+                            ]
+                        else:
+                            if not media_files:
+                                raise Error("There are no media {0} files in the directory '{1}'.", media_extensions, media_dir)
                     else:
-                        media_files.append(os.path.basename(tv_show_path))
+                        media_files = [ os.path.basename(tv_show_path) ]
                 except Error:
                     raise
                 except Exception, e:
@@ -246,17 +252,21 @@ class Tv_show_tools:
                 errors += 1
         # Gathering file list that we are going to process <--
 
-        # Caching subtitles info if it possible
+        # Caching subtitles info if it is possible
         if files_to_process:
             for downloader_name, downloader in self.__downloaders:
                 if hasattr(downloader, "will_be_requested"):
-                    self.log_info("Getting subtitles info for all requested files from {0} for further processing...", downloader_name)
                     for e in downloader.will_be_requested(files_to_process, languages):
                         self.log_error(e)
 
         # Getting the subtitles
         for task in tasks:
             errors += self.__get_subtitles(*task)
+
+        # Processing the subdirectories if needed
+        if recursive and subdirectories:
+            subdirectories.sort(cmp = lambda a, b: cmp(a.lower(), b.lower()))
+            errors += self.get_subtitles(subdirectories, languages, True)
 
         return errors
 
@@ -871,10 +881,10 @@ class Pysd:
             signal.siginterrupt(signal.SIGPIPE, False)
 
 
-            paths, languages, use_opensubtitles = self.__get_cmd_options()
+            languages, use_opensubtitles, paths, recursive = self.__get_cmd_options()
             tools = Tv_show_tools(use_opensubtitles)
 
-            errors = tools.get_subtitles(paths, languages)
+            errors = tools.get_subtitles(paths, languages, recursive)
         except (End_work_exception, Fatal_error), e:
             E(e)
         except BaseException, e:
@@ -896,9 +906,10 @@ class Pysd:
 
         try:
             cmd_options, cmd_args = getopt.gnu_getopt(
-                sys.argv[1:], "hl:o", [ "lang=", "opensubtitles" ] )
+                sys.argv[1:], "hl:ro", [ "lang=", "recursive", "opensubtitles" ] )
 
             languages = set()
+            recursive = False
             use_opensubtitles = False
 
             for option, value in cmd_options:
@@ -907,6 +918,7 @@ class Pysd:
                         """{0} [OPTIONS] -l LANGUAGE (DIRECTORY|FILE)...\n\n"""
                         """Options:\n"""
                         """ -l, --lang          a comma separated list of subtitles languages to download ("en,ru")\n"""
+                        """ -r, --recursive     process subdirectories recursively\n"""
                         """ -o, --opensubtitles download subtitles also from www.opensubtitles.org (enhances the result,\n"""
                         """                     but significantly increases the script work time + www.opensubtitles.org\n"""
                         """                     servers are often down)\n"""
@@ -922,6 +934,8 @@ class Pysd:
                             raise Error("invalid language '{0}'", lang)
 
                         languages.add(lang)
+                elif option in ("-r", "--recursive"):
+                    recursive = True
                 elif option in ("-o", "--opensubtitles"):
                     use_opensubtitles = True
                 else:
@@ -933,7 +947,7 @@ class Pysd:
             if not languages:
                 raise Error("there is no subtitles languages specified")
 
-            return (cmd_args, languages, use_opensubtitles)
+            return (languages, use_opensubtitles, cmd_args, recursive)
         except Exception, e:
             raise Fatal_error("Command line options parsing error: {0}. See `{1} -h` for more information.", e, sys.argv[0])
 
