@@ -49,8 +49,22 @@ import xmlrpclib
 import zipfile
 
 
-__all__ = [ "Tv_show_tools", "Opensubtitles_org", "Tvsubtitles_net", "NETWORK_TIMEOUT" ]
+__all__ = [
+    "Tv_show_tools",
+    "Opensubtitles_org",
+    "Tvsubtitles_net",
 
+    "LANGUAGES",
+    "MEDIA_EXTENSIONS",
+    "SUBTITLE_EXTENSIONS"
+]
+
+
+# A list of known media extensions.
+MEDIA_EXTENSIONS = ("*.avi", "*.mkv", "*.mp4", "*.wmv")
+
+# A list of known subtitle extensions.
+SUBTITLE_EXTENSIONS = ("*.srt",)
 
 # Network timeout in seconds.
 NETWORK_TIMEOUT = 30
@@ -90,7 +104,7 @@ class Tv_show_tools:
 
         try:
             filename, extension = os.path.splitext(filename.lower())
-            is_subtitles = ( extension == ".srt" )
+            is_subtitles = extension in ( ext[1:] for ext in SUBTITLE_EXTENSIONS )
             name = None
 
             if not name:
@@ -189,7 +203,9 @@ class Tv_show_tools:
         tasks = []
         subdirectories = []
         files_to_process = []
-        media_extensions = ("*.avi", "*.mkv", "*.mp4", "*.wmv")
+
+        media_extensions = [ ext[1:] for ext in MEDIA_EXTENSIONS ]
+        subtitles_extensions = [ ext[1:] for ext in SUBTITLE_EXTENSIONS ]
 
         # Gathering file list that we are going to process -->
         for tv_show_path in tv_show_paths:
@@ -202,17 +218,15 @@ class Tv_show_tools:
                 tv_show_path = os.path.abspath(tv_show_path)
                 media_dir = ( tv_show_path if is_directory else os.path.dirname(tv_show_path) )
 
-                if (not is_directory and
-                    os.path.splitext(tv_show_path)[1].lower() not in (ext[1:] for ext in media_extensions)
-                ):
-                    raise Error("'{0}' is not a media {1} file.", tv_show_path, media_extensions)
+                if not is_directory and os.path.splitext(tv_show_path)[1].lower() not in media_extensions:
+                    raise Error("'{0}' is not a media {1} file.", tv_show_path, MEDIA_EXTENSIONS)
 
                 try:
                     available_subtitles = [
                         file_name
                             for file_name in os.listdir(media_dir)
                                 if (
-                                    os.path.splitext(file_name)[1].lower() == ".srt" and
+                                    os.path.splitext(file_name)[1].lower() in subtitles_extensions and
                                     os.path.isfile(os.path.join(media_dir, file_name))
                                 )
                     ]
@@ -222,7 +236,7 @@ class Tv_show_tools:
                             file_name
                                 for file_name in os.listdir(media_dir)
                                     if (
-                                        os.path.splitext(file_name)[1].lower() in (ext[1:] for ext in media_extensions) and
+                                        os.path.splitext(file_name)[1].lower() in media_extensions and
                                         os.path.isfile(os.path.join(media_dir, file_name))
                                     )
                         ]
@@ -235,7 +249,7 @@ class Tv_show_tools:
                             ]
                         else:
                             if not media_files:
-                                raise Error("There are no media {0} files in the directory '{1}'.", media_extensions, media_dir)
+                                raise Error("There are no media {0} files in the directory '{1}'.", MEDIA_EXTENSIONS, media_dir)
                     else:
                         media_files = [ os.path.basename(tv_show_path) ]
                 except Error:
