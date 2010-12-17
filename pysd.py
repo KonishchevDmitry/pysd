@@ -35,6 +35,7 @@ if sys.version_info < (2, 6):
 import getopt
 import gzip
 import httplib
+import locale
 import os
 import re
 import signal
@@ -380,7 +381,7 @@ class Tv_show_tools:
                         else:
                             subtitles.add( (name, season, episode, language) )
 
-                            subtitles_file_path = os.path.join(media_dir, "{0}{1}{2}.srt".format(
+                            subtitles_file_path = os.path.join(media_dir, u"{0}{1}{2}.srt".format(
                                 os.path.splitext(file_name)[0], delimiter, language ))
 
                             try:
@@ -895,6 +896,7 @@ class Pysd:
             signal.siginterrupt(signal.SIGPIPE, False)
 
 
+            locale.setlocale(locale.LC_ALL, "")
             languages, use_opensubtitles, paths, recursive = self.__get_cmd_options()
             tools = Tv_show_tools(use_opensubtitles)
 
@@ -918,9 +920,12 @@ class Pysd:
         subtitles from www.opensubtitles.org.
         """
 
+        argv = [ "pysd" ]
+
         try:
+            argv = [ string.decode(locale.getlocale()[1]) for string in sys.argv ]
             cmd_options, cmd_args = getopt.gnu_getopt(
-                sys.argv[1:], "hl:ro", [ "lang=", "recursive", "opensubtitles" ] )
+                argv[1:], "hl:ro", [ "lang=", "recursive", "opensubtitles" ] )
 
             languages = set()
             recursive = False
@@ -929,15 +934,15 @@ class Pysd:
             for option, value in cmd_options:
                 if option in ("-h", "--help"):
                     print (
-                        """{0} [OPTIONS] -l LANGUAGE (DIRECTORY|FILE)...\n\n"""
-                        """Options:\n"""
-                        """ -l, --lang          a comma separated list of subtitles languages to download ("en,ru")\n"""
-                        """ -r, --recursive     process subdirectories recursively\n"""
-                        """ -o, --opensubtitles download subtitles also from www.opensubtitles.org (enhances the result,\n"""
-                        """                     but significantly increases the script work time + www.opensubtitles.org\n"""
-                        """                     servers are often down)\n"""
-                        """ -h, --help          show this help"""
-                                                .format(sys.argv[0])
+                        u"""{0} [OPTIONS] -l LANGUAGE (DIRECTORY|FILE)...\n\n"""
+                         """Options:\n"""
+                         """ -l, --lang          a comma separated list of subtitles languages to download ("en,ru")\n"""
+                         """ -r, --recursive     process subdirectories recursively\n"""
+                         """ -o, --opensubtitles download subtitles also from www.opensubtitles.org (enhances the result,\n"""
+                         """                     but significantly increases the script work time + www.opensubtitles.org\n"""
+                         """                     servers are often down)\n"""
+                         """ -h, --help          show this help"""
+                                                .format(argv[0])
                     )
                     sys.exit(0)
                 elif option in ("-l", "--lang"):
@@ -963,7 +968,7 @@ class Pysd:
 
             return (languages, use_opensubtitles, cmd_args, recursive)
         except Exception, e:
-            raise Fatal_error("Command line options parsing error: {0}. See `{1} -h` for more information.", e, sys.argv[0])
+            raise Fatal_error("Command line options parsing error: {0}. See `{1} -h` for more information.", e, argv[0])
 
 
     def __signal_handler(self, signum, frame):
@@ -984,7 +989,7 @@ class Error(Exception):
     """The base class for all pysd exceptions."""
 
     def __init__(self, error, *args):
-        Exception.__init__(self, error.format(*args) if len(args) else str(error))
+        Exception.__init__(self, unicode(error).format(*args) if len(args) else unicode(error))
 
 
 class Fatal_error(Error):
@@ -1036,13 +1041,13 @@ def get_url_contents(url):
 def E(message, *args):
     """Prints an error message."""
 
-    print >> sys.stderr, message.format(*args) if len(args) else message
+    print >> sys.stderr, unicode(message).format(*args) if len(args) else unicode(message)
 
 
 def I(message, *args):
     """Prints an info message."""
 
-    print message.format(*args) if len(args) else message
+    print unicode(message).format(*args) if len(args) else unicode(message)
 
 
 
