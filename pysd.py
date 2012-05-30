@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python2.7
 #
 #  pysd - a small Python script for automatic TV show subtitles downloading
 #  which can also be used as a separate Python module.
@@ -26,11 +26,11 @@ be used as a separate Python module.
 
 import sys
 
-if sys.version_info < (2, 6):
+if sys.version_info < (2, 7):
     if __name__ == "__main__":
-        sys.exit("Error: pysd needs python >= 2.6.")
+        sys.exit("Error: pysd needs python >= 2.7.")
     else:
-        raise Exception("pysd needs python >= 2.6")
+        raise Exception("pysd needs python >= 2.7")
 
 import getopt
 import gzip
@@ -859,7 +859,7 @@ class Xml_rpc_proxy(xmlrpclib.Transport):
 
 
     def make_connection(self, host):
-        connection = httplib.HTTP(self.proxy if self.proxy else host)
+        connection = httplib.HTTPConnection(self.proxy if self.proxy else host)
 
         if hasattr(connection, "real_host"):
             raise Fatal_error("logical error")
