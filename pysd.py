@@ -489,7 +489,7 @@ class Opensubtitles_org:
                     movies.append({
                         "moviebytesize": movie_size,
                         "moviehash": movie_hash,
-                        "sublanguageid": ",".join([ LANGUAGES[language] for language in languages ])
+                        "sublanguageid": ",".join(self.__get_language(language) for language in languages),
                     })
 
                     if movie_hash not in hashes:
@@ -525,15 +525,8 @@ class Opensubtitles_org:
                     ), reverse = True)
 
                     for subtitles in subtitles_list:
-                        movie_hash = subtitles["MovieHash"]
-                        language = subtitles["ISO639"]
-
-                        if movie_hash not in subtitles_dict:
-                            subtitles_dict[movie_hash] = {}
-                        movie_subtitles = subtitles_dict[movie_hash]
-
-                        if language not in movie_subtitles:
-                            movie_subtitles[language] = subtitles["SubDownloadLink"]
+                        subtitles_dict.setdefault(subtitles["MovieHash"], {}).setdefault(
+                            subtitles["ISO639"], subtitles["SubDownloadLink"])
                 # Filtering the subtitles with the most downloads count <--
             # Getting available subtitles <--
 
@@ -617,6 +610,17 @@ class Opensubtitles_org:
         except Exception, e:
             raise Fatal_error("Error while hashing file '{0}': {1}.", path, e)
 
+
+    def __get_language(self, language):
+        """
+        Converts ISO 639-1 language codes to www.opensubtitles.org language
+        codes.
+        """
+
+        if language == "el":
+            return "ell"
+        else:
+            return LANGUAGES[language]
 
 
 class Tvsubtitles_net:
@@ -781,7 +785,7 @@ class Tvsubtitles_net:
                     except ValueError:
                         raise Exception("failed to parse a server response")
 
-                    subtitles["language"] = info_match.group(2)
+                    subtitles["language"] = self.__get_language(info_match.group(2))
                     subtitles["downloads"] = downloads
 
                     subtitles_list.append(subtitles)
@@ -803,6 +807,18 @@ class Tvsubtitles_net:
             return episode["subtitles"]
         except Exception, e:
             raise Fatal_error("Unable to get subtitles list from {0}: {1}.", self.__domain_name, e)
+
+
+    def __get_language(self, language):
+        """
+        Converts www.tvsubtitles.net language codes to the ISO 639-1 language
+        code.
+        """
+
+        if language == "gr":
+            return "el"
+        else:
+            return language
 
 
     def __get_shows(self):
