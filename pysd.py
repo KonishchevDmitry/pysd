@@ -585,7 +585,7 @@ class Opensubtitles_org:
 
         try:
             hashing_file = open(path, "rb")
-            buf_size = struct.calcsize("=q")
+            buf_size = struct.calcsize(b"=q")
 
             file_size = os.path.getsize(path)
             file_hash = file_size
@@ -597,8 +597,8 @@ class Opensubtitles_org:
                 hashing_file.seek(pos)
 
                 for i in range(65536 / buf_size):
-                    buf = ""
-                    data = " "
+                    buf = b""
+                    data = b" "
 
                     while len(buf) != buf_size:
                         data = hashing_file.read(buf_size - len(buf))
@@ -607,7 +607,7 @@ class Opensubtitles_org:
                         else:
                             raise Error("end of file error")
 
-                    file_hash += struct.unpack("=q", buf)[0]
+                    file_hash += struct.unpack(b"=q", buf)[0]
                     file_hash &= 0xFFFFFFFFFFFFFFFF
 
             return (file_size, "{0:016x}".format(file_hash))
